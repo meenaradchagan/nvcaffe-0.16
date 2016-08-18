@@ -1,6 +1,7 @@
 #include <cstdio>
 
 #include <string>
+#include <cstring>
 #include <vector>
 
 #include "caffe/solver.hpp"
@@ -8,6 +9,8 @@
 #include "caffe/util/hdf5.hpp"
 #include "caffe/util/io.hpp"
 #include "caffe/util/upgrade_proto.hpp"
+#include "caffe/layers/memory_data_layer.hpp"
+
 
 namespace caffe {
 
@@ -63,6 +66,41 @@ void Solver<Dtype>::Init(const SolverParameter& param) {
   current_step_ = 0;
 }
 
+
+template <typename Dtype>
+unsigned Solver<Dtype>::get_train_net_batch_size() {
+  const vector<shared_ptr<Layer<Dtype> > >& layers = this->net()->layers();
+  for (int ind = 0; ind < layers.size(); ++ind) {
+    LOG(INFO) << "MVISHNU(1): " << layers[ind]->type();
+    if (strcmp(layers[ind]->type(),"Data") == 0) {
+      const LayerParameter& layer_param = layers[ind]->layer_param();
+      const DataParameter& data_param = layer_param.data_param();
+      LOG(INFO) << "MVISHNU: returning (1) " << data_param.batch_size(); 
+      return data_param.batch_size(); 
+    }
+  }
+  return 0;
+}
+
+
+template <typename Dtype>
+unsigned Solver<Dtype>::get_test_net_batch_size(int test_net_id) {
+  const vector<shared_ptr<Net<Dtype> > > test_nets_ = this->test_nets();
+  assert(test_net_id < this->test_nets_.size()); 
+  const vector<shared_ptr<Layer<Dtype> > >& layers = test_nets_[test_net_id]->layers();
+  for (int ind = 0; ind < layers.size(); ++ind) {
+    LOG(INFO) << "MVISHNU(2): " << layers[ind]->type();
+    if (strcmp(layers[ind]->type(),"Data") == 0) {
+      const LayerParameter& layer_param = layers[ind]->layer_param();
+      const DataParameter& data_param = layer_param.data_param();
+      LOG(INFO) << "MVISHNU: returning (2) " << data_param.batch_size(); 
+      return data_param.batch_size(); 
+    }
+  }
+  return 0;
+}
+
+
 template <typename Dtype>
 void Solver<Dtype>::InitTrainNet() {
   const int num_train_nets = param_.has_net() + param_.has_net_param() +
@@ -106,6 +144,14 @@ void Solver<Dtype>::InitTrainNet() {
   } else {
     net_.reset(new Net<Dtype>(net_param, root_solver_->net_.get()));
   }
+  // if no max_iter is specified but max_epoch and epoch_size are specifed, 
+  if (!param_.has_max_iter()) {
+    CHECK(param_.has_max_epoch());
+    CHECK(param_.has_epoch_size());
+    int train_net_batch_size = this->get_train_net_batch_size();
+    CHECK_GT(train_net_batch_size, 0);
+    param_.set_max_iter((param_.max_epoch() * param_.epoch_size()) / train_net_batch_size);
+  } 
 }
 
 template <typename Dtype>
@@ -187,6 +233,13 @@ void Solver<Dtype>::InitTestNets() {
           root_solver_->test_nets_[i].get()));
     }
     test_nets_[i]->set_debug_info(param_.debug_info());
+    // if test_iter == 0, then compute it using test_epoch_size
+    if (param_.test_iter(i) == 0) {
+        int test_net_batch_size = get_test_net_batch_size(i);
+        CHECK_GT(test_net_batch_size, 0);
+        int test_iter_val = param_.test_epoch_size() / test_net_batch_size;
+        param_.set_test_iter(i, test_iter_val);
+    }
   }
 }
 
@@ -298,6 +351,7 @@ void Solver<Dtype>::Step(int iters) {
   }
 }
 
+
 template <typename Dtype>
 void Solver<Dtype>::Solve(const char* resume_file) {
   CHECK(Caffe::root_solver());
@@ -316,6 +370,7 @@ void Solver<Dtype>::Solve(const char* resume_file) {
   // should be given, and we will just provide dummy vecs.
   int start_iter = iter_;
   Step(param_.max_iter() - iter_);
+
   // If we haven't already, save a snapshot after optimization, unless
   // overridden by setting snapshot_after_train := false
   if (param_.snapshot_after_train()

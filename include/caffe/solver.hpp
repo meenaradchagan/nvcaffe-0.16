@@ -74,6 +74,8 @@ class Solver {
     return test_nets_;
   }
   int iter() { return iter_; }
+  unsigned get_train_net_batch_size();
+  unsigned get_test_net_batch_size(int test_net_id);
 
   // Invoked at specific points during an iteration
   class Callback {
