@@ -147,10 +147,14 @@ message SolverParameter {
   // The number of iterations for each test net.
   repeated int32 test_iter = 3;
 
-  optional int32 test_epoch_size = 44; // the number of records in test database 
+  repeated int32 test_epoch_size = 44; // the number of records in test database 
 
   // The number of iterations between two testing phases.
   optional int32 test_interval = 4 [default = 0];
+
+  // The number of iterations between two testing phases in units of epochs
+  optional float test_interval_epoch = 45;
+ 
   optional bool test_compute_loss = 19 [default = false];
   // If true, run an initial test pass before the first iteration,
   // ensuring memory availability and printing the starting value of the loss.
