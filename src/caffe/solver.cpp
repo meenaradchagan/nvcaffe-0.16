@@ -106,19 +106,27 @@ template <typename Dtype>
 unsigned Solver<Dtype>::get_num_entries_db_core(const DataParameter& data_param) {
 #ifdef USE_LEVELDB
   if(data_param.backend() == DataParameter_DB_LEVELDB) {
+      string level_db_name = data_param.source();
       LOG(INFO)
-        << "Reading leveldb <" << data_param.source()
+        << "Reading leveldb <" << level_db_name 
         << "> to find the number of entries...\n";
-      leveldb::DB* db_;
+      leveldb::DB* db_ = NULL;
       leveldb::Options options;
       options.block_size = 65536;
       options.write_buffer_size = 268435456;
       options.max_open_files = 100;
       options.error_if_exists = false;
       options.create_if_missing = false;
-      leveldb::Status status = leveldb::DB::Open(options, data_param.source(), &db_);
-      CHECK(status.ok()) << "Failed to open leveldb " << data_param.source()
+      // TODO: The following Open() fails because the level db is already
+      // opened in data_reader.cpp and level db does not allow multiple
+      // Open() of level db!  This means that the user has to manually
+      // specify epoch_size parameter when using level dbs.
+      leveldb::Status status = leveldb::DB::Open(options, level_db_name, &db_);
+      CHECK(status.ok()) << "Failed to open leveldb " << level_db_name 
                          << std::endl << status.ToString();
+      // level db does not provide an API function to determine the number of 
+      // records.  Hence, we have to iterate through the db to count the
+      // the number of recordss!
       leveldb::Iterator* iter_ = db_->NewIterator(leveldb::ReadOptions());
       iter_->SeekToFirst();
       unsigned num_level_db_entries = 0;
@@ -126,9 +134,13 @@ unsigned Solver<Dtype>::get_num_entries_db_core(const DataParameter& data_param)
         ++num_level_db_entries;
         iter_->Next();
       } 
-      delete iter_;
-      delete db_;
-      LOG(INFO) << "leveldb <" << data_param.source()
+      if (iter_ != NULL) {
+          delete iter_;
+      }
+      if (db_ != NULL) {
+          delete db_;
+      }
+      LOG(INFO) << "leveldb <" << level_db_name
                 << "> has " << num_level_db_entries << " entries.\n";
       return(num_level_db_entries);
   }
@@ -147,7 +159,7 @@ unsigned Solver<Dtype>::get_num_entries_db_core(const DataParameter& data_param)
       CHECK_EQ(mdb_env_stat(mdb_env_,&stat),MDB_SUCCESS);
       unsigned num_lmdb_entries = stat.ms_entries;
       mdb_env_close(mdb_env_);
-      LOG(INFO) << "lmdb <" << data_param.source()
+      LOG(INFO) << "lmdb <" << data_param.source() 
                 << "> has " << num_lmdb_entries << " entries.\n";  
       return(num_lmdb_entries);
   }
@@ -201,7 +213,7 @@ void Solver<Dtype>::compute_max_iter() {
   if (!param_.has_max_iter()) {
     LOG(INFO) << "max_iter parameter is not specified. Computing max_iter parameter...\n";
     CHECK(param_.has_max_epoch());
-    if(!param_.has_epoch_size()) {
+    if (!param_.has_epoch_size()) {
       LOG(INFO) << "epoch_size (number of records) parameter is *not* specified. Reading it from db...\n";
       unsigned rec_count = this->get_num_entries_train_net_db();
       LOG(INFO) << "Setting epoch_size to " << rec_count << "\n";
@@ -230,26 +242,26 @@ template <typename Dtype>
 void Solver<Dtype>::compute_test_iter(int num_test_net_instances) {
   for (int i = 0; i < num_test_net_instances; ++i) {
     if (param_.test_iter(i) == 0) {
+      LOG(INFO)
+        << "test_iter of test net #" << i << " is 0. "
+        << "Computing it using other parameters...\n";
+      int test_net_batch_size = get_test_net_batch_size(i);
+      LOG(INFO)
+        << "batch_size of test net #" << i << " is " << test_net_batch_size << "\n";
+      CHECK_GT(test_net_batch_size, 0);
+      if (param_.test_epoch_size(i) == 0) {
         LOG(INFO)
-          << "test_iter of test net #" << i << " is 0. "
-          << "Computing it using other parameters...\n";
-        int test_net_batch_size = get_test_net_batch_size(i);
+            << "test_epoch_size of test net #" << i << " is 0. "
+            << "Reading it from db...\n"; 
+        unsigned rec_count = this->get_num_entries_test_net_db(i);
         LOG(INFO)
-          << "batch_size of test net #" << i << " is " << test_net_batch_size << "\n";
-        CHECK_GT(test_net_batch_size, 0);
-        if(param_.test_epoch_size(i) == 0) {
-          LOG(INFO)
-              << "test_epoch_size of test net #" << i << " is 0. "
-              << "Reading it from db...\n"; 
-          unsigned rec_count = this->get_num_entries_test_net_db(i);
-          LOG(INFO)
-              << "Setting test_epoch_size of test net #" << i << " to " << rec_count << "\n";
-          param_.set_test_epoch_size(i,rec_count);
-        }
-        int test_iter_val = param_.test_epoch_size(i) / test_net_batch_size;
-        LOG(INFO)
-          << "Setting test_iter of test net #" << i << " to " << test_iter_val << "\n";
-        param_.set_test_iter(i, test_iter_val);
+            << "Setting test_epoch_size of test net #" << i << " to " << rec_count << "\n";
+        param_.set_test_epoch_size(i,rec_count);
+      }
+      int test_iter_val = param_.test_epoch_size(i) / test_net_batch_size;
+      LOG(INFO)
+        << "Setting test_iter of test net #" << i << " to " << test_iter_val << "\n";
+      param_.set_test_iter(i, test_iter_val);
     }
   }
 }
@@ -328,6 +340,8 @@ void Solver<Dtype>::InitTrainNet() {
 
 template <typename Dtype>
 void Solver<Dtype>::InitTestNets() {
+
+
   CHECK(Caffe::root_solver());
   const bool has_net_param = param_.has_net_param();
   const bool has_net_file = param_.has_net();
@@ -349,6 +363,7 @@ void Solver<Dtype>::InitTestNets() {
     CHECK_EQ(param_.test_state_size(), num_test_net_instances)
         << "test_state must be unspecified or specified once per test net.";
   }
+
 
   int test_net_id = 0;
   vector<string> sources(num_test_net_instances);
